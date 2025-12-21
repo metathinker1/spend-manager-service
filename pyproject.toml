@@ -1,0 +1,11 @@
+[project]
+name = "spend-manager-service"
+version = "0.1.0"
+description = "Service for spending management"
+readme = "READMME.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic~=2.12",
+    "pandas==2.2.3"
+]
+
