@@ -15,10 +15,10 @@ class MoneyWellTransaction(BaseModel):
 
 
 class MoneyWellTransactionData:
-    def __int__(self):
+    def __init__(self):
         pass
 
-    def get(self, file_path: str) -> List:
+    def import_file(self, file_path: str) -> List:
         with open(file_path) as fp:
             is_first_line = True
             transactions_list = []
@@ -44,7 +44,7 @@ class MoneyWellTransactionData:
                         for raw_transaction in raw_transactions:
                             raw_transaction['category'] = parts[0]
                         transactions = [MoneyWellTransaction(**raw_transaction) for raw_transaction in raw_transactions]
-                        transactions_list.append(transactions)
+                        transactions_list.extend(transactions)
 
                         raw_transactions = []
             # logging.info(all_transactions)
@@ -54,5 +54,5 @@ class MoneyWellTransactionData:
 if __name__ == '__main__':
     file_path = "/Users/robertwood/Google Drive/My Drive/AppData/MoneyWell/RobBudget_202510_Details.txt"
     moneywell_data = MoneyWellTransactionData()
-    transactions_list = moneywell_data.get(file_path)
+    transactions_list = moneywell_data.import_file(file_path)
     print('stop here')
