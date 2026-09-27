@@ -1,0 +1,43 @@
+[project]
+name = "spend-manager-service"
+version = "0.1.0"
+description = "MVP FastAPI service that imports MoneyWell transaction exports and produces per-month transaction CSVs."
+authors = [
+    { name = "Rob Wood", email = "metathinker1@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.32,<1.0",
+    "pandas>=2.2,<3.0",
+    "pydantic-settings>=2.6,<3.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9.0",
+    "pytest-cov>=6.0,<7.0",
+    "httpx>=0.27,<1.0",
+    "ruff>=0.7,<1.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "spend_manager"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=spend_manager --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["spend_manager"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

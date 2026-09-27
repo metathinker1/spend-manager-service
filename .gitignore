@@ -49,6 +49,7 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+.ruff_cache/
 
 # Translations
 *.mo
@@ -81,6 +82,8 @@ target/
 
 # pyenv
 .python-version
+# ...except spend-manager-service's own, which pins the version uv installs/uses.
+!/.python-version
 
 # celery beat schedule file
 celerybeat-schedule
@@ -96,6 +99,12 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# spend-manager-service: generated CSV output (financial data — never committed)
+data/
+
+# macOS
+.DS_Store
 
 # Spyder project settings
 .spyderproject
