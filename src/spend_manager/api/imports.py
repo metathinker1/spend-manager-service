@@ -26,11 +26,18 @@ class ImportResponse(BaseModel):
     output_file: str
 
 
-@router.post("/imports/{year}/{month}", status_code=201, response_model=ImportResponse)
+@router.post(
+    "/imports/{year}/{month}", status_code=201, response_model=ImportResponse, deprecated=True
+)
 def create_import(
     settings: Annotated[Settings, Depends(get_settings)],
     year: str = Path(..., pattern=_YEAR_PATTERN, description="4-digit year, e.g. 2025"),
     month: str = Path(..., pattern=_MONTH_PATTERN, description="2-digit month, 01-12"),
 ) -> ImportResponse:
+    """Deprecated: import a monthly MoneyWell text export to CSV.
+
+    Use ``POST /imports/moneywell-store`` to import directly from MoneyWell's
+    database into Spend Manager instead.
+    """
     output_path = import_month(year, month, settings)
     return ImportResponse(output_file=str(output_path))

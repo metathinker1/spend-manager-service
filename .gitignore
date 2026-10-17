@@ -100,7 +100,8 @@ ENV/
 env.bak/
 venv.bak/
 
-# spend-manager-service: generated CSV output (financial data — never committed)
+# spend-manager-service: generated CSV output and the Spend Manager SQLite DB
+# (financial data — never committed)
 data/
 
 # macOS
