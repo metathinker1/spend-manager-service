@@ -33,6 +33,11 @@ class EntityCounts(BaseModel):
     skipped_existing: int
 
 
+class BackupStatus(BaseModel):
+    status: str = Field(description="created | skipped_unchanged | failed | disabled")
+    file: str | None = None
+
+
 class MoneyWellStoreImportResponse(BaseModel):
     moneywell_budget_id: str
     counts: dict[str, EntityCounts] = Field(
@@ -42,6 +47,7 @@ class MoneyWellStoreImportResponse(BaseModel):
         )
     )
     warnings: list[str]
+    backup: BackupStatus
 
 
 @router.post(
@@ -70,4 +76,5 @@ def create_moneywell_store_import(
             for name, c in summary.counts.items()
         },
         warnings=summary.warnings,
+        backup=BackupStatus(status=summary.backup.status, file=summary.backup.file),
     )

@@ -22,14 +22,79 @@ and installed automatically by `uv` if not already present.
 uv sync --all-groups
 ```
 
-## Configuration
+## Environments and configuration
 
-| Environment variable | Default | Purpose |
+`SPEND_MANAGER_ENV` selects **`development`** (default) or **`production`**.
+Both use a local SQLite file; production additionally requires an explicit
+database path and a backup folder, and never changes the schema by itself.
+
+Settings are read from, in order of precedence: real environment variables →
+`.env.development` / `.env.production` in the project root (chosen by
+`SPEND_MANAGER_ENV`, git-ignored) → defaults. Copy `.env.example` to start.
+
+| Setting | Default | Purpose |
 |---|---|---|
-| `MONEYWELL_STORE_ROOT` | `~/Project.SpendManager/MoneyWell_Data` | Directory holding MoneyWell budget folders and `.zip` backups |
-| `SPEND_MANAGER_DB_PATH` | `<project root>/data/spend_manager.db` | Spend Manager SQLite database (git-ignored — contains financial data) |
-| `MONEYWELL_SOURCE_DIR` | `~/Google Drive/My Drive/AppData/MoneyWell` | *(deprecated endpoint)* directory containing MoneyWell text exports |
-| `OUTPUT_DIR` | `<project root>/data/output` | *(deprecated endpoint)* directory the generated CSV files are written to (git-ignored) |
+| `SPEND_MANAGER_ENV` | `development` | `development` or `production` |
+| `SPEND_MANAGER_DB_PATH` | `<project root>/data/spend_manager.db` | Spend Manager SQLite file. **Production: required**, must not be the default, and must not be inside `~/Library/CloudStorage` (Google Drive, iCloud, Dropbox, OneDrive) — a synced live database can be corrupted |
+| `SPEND_MANAGER_BACKUP_DIR` | *(none — backups off)* | Backup folder. **Production: required**; its parent folder must exist (e.g. Google Drive mounted) |
+| `SPEND_MANAGER_BACKUP_KEEP` | `30` | Most recent backups kept (plus the newest of every month) |
+| `MONEYWELL_STORE_ROOT` | `~/Project.SpendManager/MoneyWell_Data` | Directory holding MoneyWell snapshot folders and `.zip` backups |
+| `MONEYWELL_SOURCE_DIR` | `~/Google Drive/My Drive/AppData/MoneyWell` | *(deprecated endpoint)* MoneyWell text exports |
+| `OUTPUT_DIR` | `<project root>/data/output` | *(deprecated endpoint)* generated CSV files |
+
+Database and backup paths may not be inside the project folder except under
+the git-ignored `data/`. Invalid settings stop the service at startup with a
+clear message.
+
+### Production setup (once)
+
+```bash
+mkdir -p ~/Project.SpendManager/spend-manager-data/prod
+cat > .env.production <<'ENV'
+SPEND_MANAGER_ENV=production
+SPEND_MANAGER_DB_PATH=~/Project.SpendManager/spend-manager-data/prod/spend_manager.db
+SPEND_MANAGER_BACKUP_DIR=~/Google Drive/My Drive/SoftwareDevProjects/SpendManagerBackups
+ENV
+uv run spend-manager-db migrate --env production        # creates the schema (asks to confirm)
+SPEND_MANAGER_ENV=production uv run uvicorn spend_manager.main:app
+curl -X POST http://127.0.0.1:8000/imports/moneywell-store \
+     -H 'Content-Type: application/json' -d '{"budget_folder": "SampleData_20261003"}'
+```
+The startup log shows which database is in use, e.g.
+`Spend Manager starting: env=production db=…/prod/spend_manager.db backups=…/SpendManagerBackups`.
+`pytest` refuses to run when `SPEND_MANAGER_ENV=production`.
+
+### Backups
+
+A backup is a consistent snapshot taken with SQLite's online backup API (never a
+copy of the live file), checked with `PRAGMA integrity_check`, gzip-compressed and
+written atomically as `spend_manager_<env>_<YYYYMMDDTHHMMSSZ>.db.gz` (UTC), so
+Google Drive only ever syncs complete files. If nothing changed since the newest
+backup, no new file is written.
+
+Backups are taken automatically **after every successful import**, **when the
+service shuts down** (Ctrl-C), and **before production migrations**, and on
+demand with `spend-manager-db backup`. A failed backup never undoes an import:
+the import still returns 201 with `"backup": {"status": "failed"}` and a warning.
+
+Retention: the newest `SPEND_MANAGER_BACKUP_KEEP` backups plus the newest backup
+of every calendar month. Only files matching the backup name pattern are deleted.
+
+Restore (stop the service first — restore refuses while it runs):
+```bash
+uv run spend-manager-db restore spend_manager_production_20261022T143000Z.db.gz --env production
+```
+The backup is verified before anything changes, the current database is backed
+up first, and the file is replaced atomically. Practise a restore occasionally.
+
+### `spend-manager-db`
+
+| Command | Purpose |
+|---|---|
+| `status [--env E]` | environment, database file, schema version vs required, backup folder, last backup (exit 1 if not up to date) |
+| `migrate [--env E] [--yes]` | apply schema migrations (production: backup first, then confirm) |
+| `backup [--env E] [--force]` | back up now (`--force` even if unchanged) |
+| `restore FILE [--env E] [--yes]` | restore a backup (path or file name in the backup folder; production asks to confirm) |
 
 ## Running
 
@@ -132,7 +197,8 @@ runs in a single database transaction. Any problem → nothing is written.
     "transaction_tags": {"inserted": 8, "skipped_existing": 0},
     "transaction_split_tags": {"inserted": 0, "skipped_existing": 0}
   },
-  "warnings": ["486 non-transaction activities (favorites/scheduled) ignored"]
+  "warnings": ["486 non-transaction activities (favorites/scheduled) ignored"],
+  "backup": {"status": "created", "file": "spend_manager_production_20261022T143000Z.db.gz"}
 }
 ```
 
@@ -156,7 +222,14 @@ with a `Report Total` row. Subtotal mismatches are logged as warnings.
 
 ### `GET /health`
 
-Returns `{"status": "ok"}`.
+Returns `{"status": "ok", "env": "development"}`.
+
+### `GET /health/db`
+
+Opens the database read-only and returns `200` with `env`, `database` (file
+name), `schema_version`, `required_schema_version`, `last_backup_at` and
+`last_backup_file`; `503` with `"status": "error"` and `reason`
+(`missing`, `unreadable`, `schema_outdated`, `schema_newer`) otherwise.
 
 ## Spend Manager database
 
@@ -230,4 +303,5 @@ Tests never use real financial data from the repo:
 
 Budget reports and read/query endpoints, bucket groups, multiple budgets per
 database, updating or deleting imported records via re-import, a UI
-(spend-manager-ui), authentication, and Docker/deployment.
+(spend-manager-ui), authentication, Docker/deployment, a cloud-hosted
+database, encrypted or scheduled backups.

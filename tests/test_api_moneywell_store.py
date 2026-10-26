@@ -209,3 +209,38 @@ def test_unexpected_os_error_is_logged_with_traceback(api, monkeypatch, caplog):
     record = next(r for r in caplog.records if "Unhandled OS error" in r.getMessage())
     assert "permission denied" in record.getMessage()
     assert record.exc_info is not None and record.exc_info[1] is not None
+
+
+def test_response_reports_backup_status(api, tmp_path):
+    client, root, _ = api
+    write_store(default_store(), root / "SampleData")
+    assert client.post(URL, json={"budget_folder": "SampleData"}).json()["backup"] == {
+        "status": "disabled",
+        "file": None,
+    }
+
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        moneywell_store_root=str(root),
+        spend_manager_db_path=str(tmp_path / "with-backups.db"),
+        spend_manager_backup_dir=str(tmp_path / "backups"),
+    )
+    body = client.post(URL, json={"budget_folder": "SampleData"}).json()
+    assert body["backup"]["status"] == "created"
+    assert body["backup"]["file"].startswith("spend_manager_development_")
+
+
+def test_production_outdated_schema_returns_500_with_hint_in_log(api, tmp_path, caplog):
+    client, root, _ = api
+    write_store(default_store(), root / "SampleData")
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        moneywell_store_root=str(root),
+        spend_manager_env="production",
+        spend_manager_db_path=str(tmp_path / "prod.db"),
+        spend_manager_backup_dir=str(tmp_path / "backups"),
+    )
+
+    response = client.post(URL, json={"budget_folder": "SampleData"})
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal server error"}
+    assert "run `spend-manager-db migrate --env production`" in caplog.text

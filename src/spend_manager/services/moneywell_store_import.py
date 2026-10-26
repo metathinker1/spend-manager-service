@@ -7,18 +7,30 @@ commit. Any error rolls the whole import back (NFR-2).
 Re-imports are insert-only (FR-9): rows already present (by MoneyWell unique
 id, or name for tags) are skipped, never updated or deleted, because the
 Spend Manager database is the system of record after the first import.
+
+Environments (2026-10-17-sqlite-cloud-production-db FD v2 §1.7): in
+production the service never runs DDL — it only checks the schema version;
+after every successful import a backup is taken (§1.3). A backup failure
+never undoes or fails the committed import.
 """
 
 from __future__ import annotations
 
 import logging
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Literal
 
 from spend_manager.config import Settings
 from spend_manager.db import repository as repo
-from spend_manager.db.schema import ensure_schema, open_db, utc_now_iso
-from spend_manager.exceptions import BudgetMismatchError, SplitConflictError
+from spend_manager.db.backup import create_backup
+from spend_manager.db.schema import (
+    ensure_schema,
+    open_db,
+    require_current_schema,
+    utc_now_iso,
+)
+from spend_manager.exceptions import BackupError, BudgetMismatchError, SplitConflictError
 from spend_manager.moneywell_store.convert import ConvertedSnapshot, validate_snapshot
 from spend_manager.moneywell_store.reader import read_store
 from spend_manager.moneywell_store.source import resolve_store
@@ -33,10 +45,17 @@ class EntityCount:
 
 
 @dataclass(frozen=True)
+class BackupOutcome:
+    status: Literal["created", "skipped_unchanged", "failed", "disabled"]
+    file: str | None = None
+
+
+@dataclass(frozen=True)
 class ImportSummary:
     moneywell_budget_id: str
     counts: dict[str, EntityCount]
     warnings: list[str]
+    backup: BackupOutcome = field(default_factory=lambda: BackupOutcome("disabled"))
 
 
 def import_store(budget_folder: str, settings: Settings) -> ImportSummary:
@@ -54,7 +73,10 @@ def import_store(budget_folder: str, settings: Settings) -> ImportSummary:
 
     conn = open_db(settings.db_path)
     try:
-        ensure_schema(conn)
+        if settings.is_production:
+            require_current_schema(conn, settings.environment.value)
+        else:
+            ensure_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
         try:
             _check_budget(conn, converted.budget_id)
@@ -62,10 +84,13 @@ def import_store(budget_folder: str, settings: Settings) -> ImportSummary:
             repo.record_import(conn, converted.budget_id, utc_now_iso())
             conn.execute("COMMIT")
         except BaseException:
-            conn.execute("ROLLBACK")
+            _rollback_quietly(conn)
             raise
     finally:
         conn.close()
+
+    warnings = list(converted.warnings)
+    backup = _backup_after_import(settings, warnings)
 
     logger.info(
         "Imported MoneyWell budget %s from %r: %s",
@@ -75,7 +100,34 @@ def import_store(budget_folder: str, settings: Settings) -> ImportSummary:
     )
     for warning in converted.warnings:
         logger.warning("MoneyWell import: %s", warning)
-    return ImportSummary(converted.budget_id, counts, converted.warnings)
+    return ImportSummary(converted.budget_id, counts, warnings, backup)
+
+
+def _rollback_quietly(conn: sqlite3.Connection) -> None:
+    # A failing ROLLBACK (e.g. the transaction was already aborted) must never
+    # replace the exception that caused it.
+    try:
+        conn.execute("ROLLBACK")
+    except sqlite3.Error as exc:
+        logger.warning("ROLLBACK failed after an import error: %s", exc)
+
+
+def _backup_after_import(settings: Settings, warnings: list[str]) -> BackupOutcome:
+    """Back up after a committed import (FD §1.3). Never raises."""
+    if settings.backup_dir is None:
+        return BackupOutcome("disabled")
+    try:
+        result = create_backup(
+            settings.db_path,
+            settings.backup_dir,
+            settings.environment.value,
+            keep=settings.spend_manager_backup_keep,
+        )
+    except (BackupError, OSError) as exc:
+        logger.error("Backup after import failed: %s", exc, exc_info=exc)
+        warnings.append(f"backup failed: {exc}")
+        return BackupOutcome("failed")
+    return BackupOutcome(result.status, result.file)
 
 
 def _check_budget(conn: sqlite3.Connection, budget_id: str) -> None:

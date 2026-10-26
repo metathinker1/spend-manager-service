@@ -36,11 +36,14 @@ def api_client(tmp_path):
 
 
 def test_health_check():
-    client = TestClient(app)
-    response = client.get("/health")
+    app.dependency_overrides[get_settings] = lambda: Settings()
+    try:
+        response = TestClient(app).get("/health")
+    finally:
+        app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "ok", "env": "development"}
 
 
 def test_successful_import_returns_201_with_output_file(api_client):

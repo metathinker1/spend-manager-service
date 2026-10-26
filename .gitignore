@@ -93,6 +93,9 @@ celerybeat-schedule
 
 # Environments
 .env
+# Per-environment settings (may contain local paths); only the example is committed
+.env.*
+!.env.example
 .venv
 env/
 venv/

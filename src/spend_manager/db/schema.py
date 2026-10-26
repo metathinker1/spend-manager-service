@@ -13,7 +13,7 @@ import datetime
 import sqlite3
 from pathlib import Path
 
-from spend_manager.exceptions import DatabasePathError, SchemaVersionError
+from spend_manager.exceptions import DatabasePathError, SchemaOutdatedError, SchemaVersionError
 
 V1_DDL = """
 CREATE TABLE import_metadata (
@@ -168,6 +168,49 @@ def open_db(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
+
+
+def required_version() -> int:
+    """The schema version this code requires (the latest migration)."""
+    return MIGRATIONS[-1][0]
+
+
+def read_schema_version(conn: sqlite3.Connection) -> int:
+    """The database's schema version, without any DDL (0 if never migrated).
+
+    Safe on read-only connections; used for production checks and health.
+    """
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"
+    ).fetchone()
+    if not exists:
+        return 0
+    row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
+    return row[0] or 0
+
+
+def require_current_schema(conn: sqlite3.Connection, env: str = "production") -> int:
+    """Check, without changing anything, that the schema matches the code.
+
+    The production service never runs DDL (P-1); migrations are applied with
+    ``spend-manager-db migrate --env production``.
+
+    Raises:
+        SchemaOutdatedError: the database is older than the code.
+        SchemaVersionError: the database is newer than the code.
+    """
+    version = read_schema_version(conn)
+    latest = required_version()
+    if version > latest:
+        raise SchemaVersionError(
+            f"database schema version {version} is newer than supported version {latest}"
+        )
+    if version < latest:
+        raise SchemaOutdatedError(
+            f"{env} schema is v{version}, code requires v{latest} — run "
+            f"`spend-manager-db migrate --env {env}`"
+        )
+    return version
 
 
 def current_version(conn: sqlite3.Connection) -> int:

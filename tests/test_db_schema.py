@@ -215,3 +215,51 @@ def test_open_db_rejects_a_file_as_parent(tmp_path):
     (tmp_path / "not_a_dir").write_text("x")
     with pytest.raises(DatabasePathError, match="parent is not a directory"):
         open_db(tmp_path / "not_a_dir" / "sm.db")
+
+
+def test_read_schema_version_never_creates_tables(tmp_path):
+    from spend_manager.db.schema import read_schema_version
+
+    conn = open_db(tmp_path / "empty.db")
+    try:
+        assert read_schema_version(conn) == 0
+        tables = conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]
+        assert tables == 0
+    finally:
+        conn.close()
+
+
+def test_require_current_schema(tmp_path):
+    from spend_manager.db.schema import require_current_schema, required_version
+    from spend_manager.exceptions import SchemaOutdatedError
+
+    conn = open_db(tmp_path / "sm.db")
+    try:
+        with pytest.raises(SchemaOutdatedError) as exc_info:
+            require_current_schema(conn)
+        assert "production schema is v0, code requires v" in str(exc_info.value)
+        assert "spend-manager-db migrate --env production" in str(exc_info.value)
+        assert conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0] == 0
+
+        ensure_schema(conn)
+        assert require_current_schema(conn) == required_version()
+
+        conn.execute("INSERT INTO schema_version VALUES (99, 'x')")
+        with pytest.raises(SchemaVersionError):
+            require_current_schema(conn)
+    finally:
+        conn.close()
+
+
+def test_read_schema_version_on_read_only_connection(tmp_path):
+    from spend_manager.db.schema import read_schema_version
+
+    path = tmp_path / "sm.db"
+    conn = open_db(path)
+    ensure_schema(conn)
+    conn.close()
+    ro = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        assert read_schema_version(ro) == MIGRATIONS[-1][0]
+    finally:
+        ro.close()
