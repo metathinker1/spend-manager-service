@@ -1,21 +1,29 @@
 """FastAPI application entry point.
 
-Registers the health check, the import routers, and the exception handlers
-that translate domain exceptions into the HTTP responses defined in
-Functional Design §4 (Error Model).
+Registers the health and import routers, the exception handlers that
+translate domain exceptions into HTTP responses (Functional Design §4, Error
+Model), and the lifespan (2026-10-17-sqlite-cloud-production-db FD v2 §1.11):
+validate settings, hold the shared run lock, log a startup banner, and take a
+backup on shutdown.
 """
 
 from __future__ import annotations
 
 import logging
 import sqlite3
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from spend_manager.api.health import router as health_router
 from spend_manager.api.imports import router as imports_router
 from spend_manager.api.moneywell_store import router as moneywell_store_router
+from spend_manager.config import Settings, get_settings
+from spend_manager.db.backup import RunLock, create_backup
 from spend_manager.exceptions import (
+    BackupError,
     DatabaseSetupError,
     ImportRejectedError,
     ParseError,
@@ -26,6 +34,45 @@ from spend_manager.exceptions import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()  # ConfigurationError aborts startup
+    lock = RunLock(settings.db_path).acquire_shared()  # fails while a restore runs
+    logger.info(
+        "Spend Manager starting: env=%s db=%s backups=%s",
+        settings.environment.value,
+        settings.db_path,
+        settings.backup_dir or "disabled",
+    )
+    try:
+        yield
+    finally:
+        try:
+            _shutdown_backup(settings)
+        finally:
+            lock.release()
+
+
+def _shutdown_backup(settings: Settings) -> None:
+    if settings.backup_dir is None or not settings.db_path.is_file():
+        return
+    try:
+        result = create_backup(
+            settings.db_path,
+            settings.backup_dir,
+            settings.environment.value,
+            keep=settings.spend_manager_backup_keep,
+        )
+    except (BackupError, OSError) as exc:
+        logger.error("Shutdown backup failed: %s", exc, exc_info=exc)
+        return
+    if result.status == "created":
+        logger.info("Shutdown backup: created %s", result.file)
+    else:
+        logger.info("Shutdown backup: skipped (unchanged since %s)", result.file)
+
+
 app = FastAPI(
     title="Spend Manager Service",
     description=(
@@ -33,14 +80,11 @@ app = FastAPI(
         "(The monthly text-export → CSV import is deprecated.)"
     ),
     version="0.2.0",
+    lifespan=lifespan,
 )
+app.include_router(health_router)
 app.include_router(moneywell_store_router)
 app.include_router(imports_router)
-
-
-@app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
 
 
 @app.exception_handler(SourceFileNotFoundError)

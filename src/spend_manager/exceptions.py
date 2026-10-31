@@ -6,7 +6,10 @@ Error Model):
 - Text-export import: ``SourceFileNotFoundError`` -> 404, ``ParseError`` -> 400.
 - MoneyWell store import: ``SourceNotFoundError`` -> 404,
   ``ImportRejectedError`` (and subclasses) -> 400, ``DatabaseSetupError``
-  (``DatabasePathError``, ``SchemaVersionError``) -> 500.
+  (``DatabasePathError``, ``SchemaVersionError``, ``SchemaOutdatedError``,
+  ``ConfigurationError``) -> 500.
+- Backups / restore (CLI and post-import): ``BackupError``, ``RestoreError``,
+  ``DatabaseInUseError`` — never mapped to an HTTP error for a committed import.
 """
 
 from __future__ import annotations
@@ -110,3 +113,26 @@ class DatabasePathError(DatabaseSetupError):
 
 class SchemaVersionError(DatabaseSetupError):
     """The Spend Manager database schema is newer than this code understands."""
+
+
+class ConfigurationError(DatabaseSetupError):
+    """Invalid environment selection, settings file or setting values (C-1..C-7)."""
+
+
+class SchemaOutdatedError(DatabaseSetupError):
+    """The production schema is older than the code; run ``spend-manager-db migrate``."""
+
+
+# --- Backups / restore -------------------------------------------------------
+
+
+class BackupError(Exception):
+    """A backup could not be created; committed data is never affected."""
+
+
+class RestoreError(Exception):
+    """A backup could not be restored; the live database is left untouched."""
+
+
+class DatabaseInUseError(Exception):
+    """The database is in use (service running or restore in progress)."""

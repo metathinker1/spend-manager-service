@@ -256,3 +256,113 @@ def test_category_line_view_matches_imported_data(env):
     assert _query(
         settings, "SELECT printf('%.2f', SUM(amount_cents) / 100.0) FROM category_line"
     ) == [("1771.64",)]
+
+
+# --- Environments and backups (2026-10-17-sqlite-cloud-production-db) ---------
+
+
+def _prod_settings(root, tmp_path, *, backups=True):
+    values = {
+        "moneywell_store_root": str(root),
+        "spend_manager_env": "production",
+        "spend_manager_db_path": str(tmp_path / "prod" / "sm.db"),
+    }
+    if backups:
+        values["spend_manager_backup_dir"] = str(tmp_path / "backups")
+    return Settings(**values)
+
+
+def _migrate(settings):
+    from spend_manager.db.schema import ensure_schema, open_db
+
+    conn = open_db(settings.db_path)
+    try:
+        ensure_schema(conn)
+    finally:
+        conn.close()
+
+
+def test_production_import_requires_migrated_schema(env, tmp_path):
+    from spend_manager.exceptions import SchemaOutdatedError
+
+    root, _ = env
+    write_store(default_store(), root / "Budget")
+    settings = _prod_settings(root, tmp_path)
+
+    with pytest.raises(SchemaOutdatedError, match="spend-manager-db migrate --env production"):
+        import_store("Budget", settings)
+
+    # The production service ran no DDL: the database has no tables at all.
+    assert _query(settings, "SELECT COUNT(*) FROM sqlite_master") == [(0,)]
+    assert not settings.backup_dir.exists()
+
+
+def test_production_import_after_migrate_creates_backup(env, tmp_path):
+    root, _ = env
+    write_store(default_store(), root / "Budget")
+    settings = _prod_settings(root, tmp_path)
+    _migrate(settings)
+
+    summary = import_store("Budget", settings)
+
+    assert summary.counts == FIRST_IMPORT
+    assert summary.backup.status == "created"
+    assert summary.backup.file.startswith("spend_manager_production_")
+    assert (settings.backup_dir / summary.backup.file).is_file()
+
+    again = import_store("Budget", settings)
+    assert again.backup.status == "skipped_unchanged"
+    assert again.backup.file == summary.backup.file
+
+
+def test_development_without_backup_dir_reports_disabled(env):
+    root, settings = env
+    write_store(default_store(), root / "Budget")
+    assert import_store("Budget", settings).backup.status == "disabled"
+
+
+def test_backup_failure_never_fails_a_committed_import(env, tmp_path, monkeypatch, caplog):
+    from spend_manager.exceptions import BackupError
+    from spend_manager.services import moneywell_store_import as service
+
+    root, _ = env
+    write_store(default_store(), root / "Budget")
+    settings = _prod_settings(root, tmp_path)
+    _migrate(settings)
+
+    def failing(*args, **kwargs):
+        raise BackupError("cannot write backup: No space left on device")
+
+    monkeypatch.setattr(service, "create_backup", failing)
+    summary = import_store("Budget", settings)
+
+    assert summary.backup.status == "failed"
+    assert summary.counts == FIRST_IMPORT  # committed
+    assert "backup failed: cannot write backup: No space left on device" in summary.warnings
+    assert _query(settings, "SELECT COUNT(*) FROM spend_transaction") == [(7,)]
+    assert "Backup after import failed" in caplog.text
+
+
+def test_failing_rollback_does_not_mask_the_original_error(env, monkeypatch, caplog):
+    from spend_manager.services import moneywell_store_import as service
+
+    root, settings = env
+    write_store(default_store(), root / "Budget")
+
+    def boom(*args, **kwargs):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    real_rollback = service._rollback_quietly
+
+    def rollback_that_fails(conn):
+        class _Broken:
+            def execute(self, sql):
+                raise sqlite3.OperationalError("cannot rollback - no transaction is active")
+
+        real_rollback(_Broken())
+
+    monkeypatch.setattr(repository, "insert_splits", boom)
+    monkeypatch.setattr(service, "_rollback_quietly", rollback_that_fails)
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        import_store("Budget", settings)
+    assert "ROLLBACK failed after an import error: cannot rollback" in caplog.text

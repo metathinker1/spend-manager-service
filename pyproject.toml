@@ -1,6 +1,6 @@
 [project]
 name = "spend-manager-service"
-version = "0.1.0"
+version = "0.2.0"
 description = "FastAPI service that imports MoneyWell persistentStore data into the Spend Manager SQLite database."
 authors = [
     { name = "Rob Wood", email = "metathinker1@gmail.com" }
@@ -12,6 +12,9 @@ dependencies = [
     "pandas>=2.2,<3.0",
     "pydantic-settings>=2.6,<3.0",
 ]
+
+[project.scripts]
+spend-manager-db = "spend_manager.cli:main"
 
 [dependency-groups]
 dev = [
