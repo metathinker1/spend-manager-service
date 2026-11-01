@@ -13,7 +13,12 @@ import datetime
 import sqlite3
 from pathlib import Path
 
-from spend_manager.exceptions import DatabasePathError, SchemaOutdatedError, SchemaVersionError
+from spend_manager.exceptions import (
+    DatabaseMissingError,
+    DatabasePathError,
+    SchemaOutdatedError,
+    SchemaVersionError,
+)
 
 V1_DDL = """
 CREATE TABLE import_metadata (
@@ -167,6 +172,31 @@ def open_db(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=BUSY_TIMEOUT_SECONDS, isolation_level=None)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
+    return conn
+
+
+def open_read_db(path: Path) -> sqlite3.Connection:
+    """Open the Spend Manager database read-only for the read API.
+
+    Unlike ``open_db`` this never creates the file or its parent folder and
+    never writes. Rows are ``sqlite3.Row`` (access by column name). The
+    connection may be used from more than one thread, one at a time: FastAPI
+    runs a dependency, the endpoint and a streamed response body on different
+    threadpool threads.
+
+    Raises:
+        DatabaseMissingError: ``path`` is not an existing file.
+    """
+    if not path.is_file():
+        raise DatabaseMissingError(f"database file not found: {path.name}")
+    conn = sqlite3.connect(
+        path.resolve().as_uri() + "?mode=ro",
+        uri=True,
+        timeout=BUSY_TIMEOUT_SECONDS,
+        isolation_level=None,
+        check_same_thread=False,
+    )
+    conn.row_factory = sqlite3.Row
     return conn
 
 

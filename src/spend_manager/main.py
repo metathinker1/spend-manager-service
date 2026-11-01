@@ -1,6 +1,7 @@
 """FastAPI application entry point.
 
-Registers the health and import routers, the exception handlers that
+Registers the health, import and read-API (``/api``, 2026-10-31-spend-manager-ui)
+routers, the exception handlers that
 translate domain exceptions into HTTP responses (Functional Design §4, Error
 Model), and the lifespan (2026-10-17-sqlite-cloud-production-db FD v2 §1.11):
 validate settings, hold the shared run lock, log a startup banner, and take a
@@ -20,6 +21,10 @@ from fastapi.responses import JSONResponse
 from spend_manager.api.health import router as health_router
 from spend_manager.api.imports import router as imports_router
 from spend_manager.api.moneywell_store import router as moneywell_store_router
+from spend_manager.api.reference import router as reference_router
+from spend_manager.api.reports import router as reports_router
+from spend_manager.api.snapshots import router as snapshots_router
+from spend_manager.api.transactions import router as transactions_router
 from spend_manager.config import Settings, get_settings
 from spend_manager.db.backup import RunLock, create_backup
 from spend_manager.exceptions import (
@@ -76,15 +81,20 @@ def _shutdown_backup(settings: Settings) -> None:
 app = FastAPI(
     title="Spend Manager Service",
     description=(
-        "Imports MoneyWell data into the Spend Manager database. "
+        "Imports MoneyWell data into the Spend Manager database and serves it "
+        "read-only to spend-manager-ui under /api. "
         "(The monthly text-export → CSV import is deprecated.)"
     ),
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 app.include_router(health_router)
 app.include_router(moneywell_store_router)
 app.include_router(imports_router)
+app.include_router(reference_router)
+app.include_router(transactions_router)
+app.include_router(reports_router)
+app.include_router(snapshots_router)
 
 
 @app.exception_handler(SourceFileNotFoundError)

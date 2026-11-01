@@ -6,8 +6,8 @@ Error Model):
 - Text-export import: ``SourceFileNotFoundError`` -> 404, ``ParseError`` -> 400.
 - MoneyWell store import: ``SourceNotFoundError`` -> 404,
   ``ImportRejectedError`` (and subclasses) -> 400, ``DatabaseSetupError``
-  (``DatabasePathError``, ``SchemaVersionError``, ``SchemaOutdatedError``,
-  ``ConfigurationError``) -> 500.
+  (``DatabasePathError``, ``DatabaseMissingError``, ``SchemaVersionError``,
+  ``SchemaOutdatedError``, ``ConfigurationError``) -> 500.
 - Backups / restore (CLI and post-import): ``BackupError``, ``RestoreError``,
   ``DatabaseInUseError`` — never mapped to an HTTP error for a committed import.
 """
@@ -109,6 +109,10 @@ class DatabaseSetupError(Exception):
 
 class DatabasePathError(DatabaseSetupError):
     """``SPEND_MANAGER_DB_PATH`` does not name a usable database file."""
+
+
+class DatabaseMissingError(DatabaseSetupError):
+    """The database file does not exist; read endpoints never create it."""
 
 
 class SchemaVersionError(DatabaseSetupError):
