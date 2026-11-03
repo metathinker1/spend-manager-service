@@ -6,8 +6,14 @@ import sqlite3
 
 import pytest
 
-from spend_manager.db.schema import MIGRATIONS, current_version, ensure_schema, open_db
-from spend_manager.exceptions import SchemaVersionError
+from spend_manager.db.schema import (
+    MIGRATIONS,
+    current_version,
+    ensure_schema,
+    open_db,
+    open_read_db,
+)
+from spend_manager.exceptions import DatabaseMissingError, SchemaVersionError
 
 EXPECTED_TABLES = {
     "schema_version",
@@ -263,3 +269,28 @@ def test_read_schema_version_on_read_only_connection(tmp_path):
         assert read_schema_version(ro) == MIGRATIONS[-1][0]
     finally:
         ro.close()
+
+
+def test_open_read_db_missing_file_is_not_created(tmp_path):
+    path = tmp_path / "nested" / "sm.db"
+
+    with pytest.raises(DatabaseMissingError, match="database file not found: sm.db"):
+        open_read_db(path)
+
+    assert not path.parent.exists()
+
+
+def test_open_read_db_is_read_only_with_named_rows(tmp_path):
+    path = tmp_path / "sm.db"
+    writer = open_db(path)
+    ensure_schema(writer)
+    writer.close()
+
+    conn = open_read_db(path)
+    try:
+        row = conn.execute("SELECT MAX(version) AS version FROM schema_version").fetchone()
+        assert row["version"] == MIGRATIONS[-1][0]
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            conn.execute("INSERT INTO tag (name) VALUES ('x')")
+    finally:
+        conn.close()

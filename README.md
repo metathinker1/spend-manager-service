@@ -5,13 +5,19 @@ FastAPI service that imports MoneyWell budget data **directly from MoneyWell's
 accounts, categories (MoneyWell *buckets*), tags, transactions (MoneyWell
 *activities*) and splits.
 
+It also serves the imported data **read-only** to
+[spend-manager-ui](../spend-manager-ui) under `/api` (transaction list,
+expense reports, CSV export, snapshot list). The service is the only process
+that opens the Spend Manager database.
+
 An older endpoint that turns a monthly MoneyWell text export into a CSV is
 still available but **deprecated**.
 
 Built with [AI-DLC](https://github.com) — see the AI-DLC artifacts (requirements,
 design, plans) in Google Drive under `AI-DLC → spend-manager-service →`
 `2026-09-27-import-moneywell-sqlite` (store import) and
-`2026-09-19-import-moneywell-transactions` (text-export CSV import).
+`2026-09-19-import-moneywell-transactions` (text-export CSV import), and under
+`AI-DLC → spend-manager-ui → 2026-10-31-spend-manager-ui` (read API, v0.3.0).
 
 ## Setup
 
@@ -111,6 +117,11 @@ curl http://127.0.0.1:8000/health
 ```
 
 Interactive API docs: <http://127.0.0.1:8000/docs>.
+
+**With the UI**, run two processes: this service (as above; add
+`SPEND_MANAGER_ENV=production` for the production database) and, in
+`spend-manager-ui`, `npm run dev`. The UI's dev server forwards `/api`,
+`/health` and `/imports` to `http://127.0.0.1:8000`, so no CORS setup is needed.
 
 ### MoneyWell snapshots
 
@@ -220,6 +231,70 @@ Currency`); each category's transactions are followed by a summary row (empty
 `Date` and `Type`) holding the category label and subtotal, and the file ends
 with a `Report Total` row. Subtotal mismatches are logged as warnings.
 
+### Read API (for spend-manager-ui)
+
+All read endpoints open the database **read-only**: they never create the
+file, never migrate and never write. A missing database or a schema that does
+not match the code (in either environment) returns `500`
+`{"detail": "Internal server error"}` and is logged; `GET /health/db` gives
+the reason. Money is integer cents (`*_cents`), dates `YYYY-MM-DD`, months
+`YYYY-MM`.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/accounts` | `[{id, name, type, is_hidden}]` |
+| `GET /api/categories` | `[{id, name, type: income\|expense, is_hidden}]` |
+| `GET /api/transactions` | `TransactionPage` (one page of transactions with splits and a line summary) |
+| `GET /api/transactions/export.csv` | every matching line as CSV (no paging) |
+| `GET /api/reports/spending-by-category?year=Y[&month=M]` | expense spending per category for a month or year |
+| `GET /api/reports/category-by-month?year=Y` or `?range=last12` | expense spending per category and month (exactly one of the two) |
+| `GET /api/moneywell-snapshots` | `[{name, kind: folder\|zip, snapshot_date}]`, newest first; `404` if `MONEYWELL_STORE_ROOT` is missing |
+
+**Lines.** Filtering works on *lines*: a non-split transaction is one line,
+each split of a split transaction is one line (the `category_line` view).
+`/api/transactions` and the CSV take the same filter parameters:
+
+| Parameter | Meaning |
+|---|---|
+| `date_from`, `date_to` | inclusive date range (each optional; `date_from` ≤ `date_to`) |
+| `account_id` (repeat) | any of these accounts |
+| `category_id` (repeat) | any of these categories (split lines use the split's category) |
+| `uncategorized=true` | also lines with no category (OR with `category_id`) |
+| `include_transfers=true` | include **Transfer** lines (hidden by default) |
+| `q` | case-insensitive text in payee, transaction memo or split memo (≤ 100 characters; `%` and `_` are literal) |
+| `page`, `page_size` | list only: page ≥ 1, size 1–200 (default 50) |
+
+A transaction is listed when **any** of its lines matches, newest first
+(`date`, then `id`, descending). A split transaction comes with **all** its
+splits, each flagged `matches`. `matching_line_count` and
+`matching_total_cents` count only matching lines, so a report value and the
+summary of its drill-down list are always equal. Invalid parameters → `422`.
+
+**Transfers.** A line is a transfer when its category is named `Transfer`
+(any letter case). Transfer lines are hidden from the list unless
+`include_transfers=true` and are always excluded from the reports. Nothing is
+stored — rename the category in MoneyWell and re-import to change it.
+
+**Reports.** Spending = −sum of line amounts over expense-category and
+uncategorized lines (income categories and transfers excluded), so refunds
+reduce it and a row can be negative. Rows are ordered by spending, highest
+first; the `Uncategorized` row (`category_id: null`) is always last.
+`range=last12` is the current month and the 11 before it. Month and year
+outside 1–12 / 1900–2100 → `422`.
+
+**CSV.** Columns `date, account, payee, type, category, memo, amount,
+transaction_id, split_id, is_transfer`; `memo` is the split memo for split
+lines; `amount` is dollars with two decimals (`-12.30`). Text cells starting
+with `=`, `+`, `-`, `@`, tab or CR get a leading `'` so spreadsheets do not run
+them as formulas. The file is named
+`transactions_<date_from|all>_<date_to|all>.csv`.
+
+```bash
+curl 'http://127.0.0.1:8000/api/transactions?date_from=2026-08-01&date_to=2026-08-31&category_id=12&uncategorized=true'
+curl 'http://127.0.0.1:8000/api/reports/category-by-month?range=last12'
+curl -OJ 'http://127.0.0.1:8000/api/transactions/export.csv?q=costco'
+```
+
 ### `GET /health`
 
 Returns `{"status": "ok", "env": "development"}`.
@@ -301,7 +376,8 @@ Tests never use real financial data from the repo:
 
 ## Out of scope
 
-Budget reports and read/query endpoints, bucket groups, multiple budgets per
-database, updating or deleting imported records via re-import, a UI
-(spend-manager-ui), authentication, Docker/deployment, a cloud-hosted
+Editing data through the API (the first UI release is read-only), income
+reports, payee rules or automatic categorization, tags in the read API,
+bucket groups, multiple budgets per database, updating or deleting imported
+records via re-import, authentication, Docker/deployment, a cloud-hosted
 database, encrypted or scheduled backups.

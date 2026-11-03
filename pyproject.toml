@@ -1,7 +1,7 @@
 [project]
 name = "spend-manager-service"
-version = "0.2.0"
-description = "FastAPI service that imports MoneyWell persistentStore data into the Spend Manager SQLite database."
+version = "0.3.0"
+description = "FastAPI service that imports MoneyWell persistentStore data into the Spend Manager SQLite database and serves it read-only to spend-manager-ui."
 authors = [
     { name = "Rob Wood", email = "metathinker1@gmail.com" }
 ]
